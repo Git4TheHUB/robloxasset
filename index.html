@@ -6,6 +6,9 @@
     <link rel="stylesheet" type="text/css" href="scripts/css/style.css">
     <link rel="stylesheet" type="text/css" href="scripts/css/fonts.css">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    
     <meta name="description"
         content="Download Roblox shirts, models & other assets to use directly in your game, or for other use.">
     <meta name="robots" content="max-snippet:-1, max-image-preview:large, max-video-preview:-1">
@@ -45,7 +48,7 @@
                 <textarea autocomplete="off" id="assetURL" name="url" placeholder="Enter Roblox Asset URLs or IDs separated by commas..."></textarea>
                 
                 <select id="assetType" name="type">
-                    <option value="placeholder">Select Asset Type (Optional)</option>
+                    <option value="placeholder">Select Asset Type (Auto-Detected)</option>
                     <option value="accessory">Accessory</option>
                     <option value="clothing">Clothing</option>
                     <option value="decal">Decal</option>
@@ -69,7 +72,7 @@
     <script>
         const CORS_PROXY = "https://cors-anywhere.herokuapp.com/";
 
-        // Roblox AssetTypeId -> file extension [cite: 3]
+        // Roblox AssetTypeId -> file extension
         const ASSET_TYPE_EXT = {
             1:  ".png",   2:  ".rbxm",  3:  ".lua",   5:  ".rbxm",  8:  ".rbxm", 
             9:  ".png",   11: ".png",   12: ".png",   13: ".png",   17: ".rbxm",
@@ -80,56 +83,56 @@
             51: ".rbxm",  61: ".ttf",   62: ".ttf",   63: ".mp4"
         };
 
-        const IMAGE_TYPES = new Set([1, 9, 11, 12, 13, 18, 21]); [cite: 6]
+        const IMAGE_TYPES = new Set([1, 9, 11, 12, 13, 18, 21]);
 
         document.addEventListener("DOMContentLoaded", () => {
-            document.getElementById("submitAsset").addEventListener("click", processOptions); [cite: 7]
+            document.getElementById("submitAsset").addEventListener("click", processOptions);
         });
 
         // ─── ID extraction ────────────────────────────────────────────────────────────
         function extractAssetId(url) {
-            const match = url.match(/\/(\d{6,})/); [cite: 8]
-            return match ? match[1] : null; [cite: 9]
+            const match = url.match(/\/(\d{6,})/);
+            return match ? match[1] : null;
         }
 
         // ─── Roblox JSON API calls ─────────────────────────────
         async function fetchJSON(url) {
             const res = await fetch(url);
-            if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`); [cite: 10]
-            return res.json(); [cite: 11]
+            if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`);
+            return res.json();
         }
 
         async function getAssetDetails(assetId) {
             const data = await fetchJSON(`https://economy.roblox.com/v2/assets/${assetId}/details`);
-            return { name: data.Name, assetTypeId: data.AssetTypeId }; [cite: 12]
+            return { name: data.Name, assetTypeId: data.AssetTypeId };
         }
 
         async function getAssetThumbnailUrl(assetId) {
             const data = await fetchJSON(`https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png&isCircular=false`);
-            const entry = data?.data?.[0]; [cite: 13]
+            const entry = data?.data?.[0];
             if (!entry || entry.state !== "Completed") {
-                throw new Error("Thumbnail not yet available — try again in a moment"); [cite: 13]
+                throw new Error("Thumbnail not yet available — try again in a moment");
             }
-            return entry.imageUrl; [cite: 14]
+            return entry.imageUrl;
         }
 
-        // ─── Binary download (CORS proxy required) ───────────────────────────────────
+        // ─── Binary download (CORS proxy required for models/audio) ──────────────────
         async function fetchBlob(url) {
             const res = await fetch(CORS_PROXY + url);
-            if (!res.ok) throw new Error(`HTTP ${res.status} downloading asset`); [cite: 15]
-            return res.blob(); [cite: 16]
+            if (!res.ok) throw new Error(`HTTP ${res.status} downloading asset`);
+            return res.blob();
         }
 
-        // ─── Batch Processing ────────────────────────
+        // ─── Batch Processing & Zipping ────────────────────────
         async function processOptions() {
-            const inputVal = document.getElementById("assetURL").value.trim(); [cite: 16]
+            const inputVal = document.getElementById("assetURL").value.trim();
 
             hideError();
-            resetBorders(); [cite: 16]
+            resetBorders();
 
             if (!inputVal) {
-                markInvalid("assetURL"); [cite: 17]
-                return showError("Asset URL or ID was not specified"); [cite: 17]
+                markInvalid("assetURL");
+                return showError("Asset URL or ID was not specified");
             }
 
             // Parse comma-separated string
@@ -150,90 +153,115 @@
                 return showError("Could not find valid asset IDs in your input.");
             }
 
+            // Initialize JSZip instance
+            const zip = new JSZip();
+            let filesAddedToZip = 0;
+
             for (let i = 0; i < assetIds.length; i++) {
                 const assetId = assetIds[i];
-                showLoadMsg(`Processing Asset ${i + 1} of ${assetIds.length} (ID: ${assetId})...`);
+                showLoadMsg(`Fetching Asset ${i + 1} of ${assetIds.length} (ID: ${assetId})...`);
 
                 try {
-                    const { name, assetTypeId } = await getAssetDetails(assetId); [cite: 22]
-                    const ext = ASSET_TYPE_EXT[assetTypeId] ?? ".bin"; [cite: 23]
-                    const filename = sanitizeFilename(name) + ext; [cite: 23]
+                    const { name, assetTypeId } = await getAssetDetails(assetId);
+                    const ext = ASSET_TYPE_EXT[assetTypeId] ?? ".bin";
+                    const filename = sanitizeFilename(name) + ext;
 
-                    changeLoadMsg(`Downloading ${filename}...`);
+                    changeLoadMsg(`Adding ${filename} to zip...`);
 
-                    let downloadUrl; [cite: 24]
-                    if (IMAGE_TYPES.has(assetTypeId)) { [cite: 25]
-                        downloadUrl = await getAssetThumbnailUrl(assetId); [cite: 25]
+                    let downloadUrl;
+                    let fileBlob;
+                    
+                    if (IMAGE_TYPES.has(assetTypeId)) {
+                        // Image types fetch directly from Roblox Thumbnail API (No proxy needed)
+                        downloadUrl = await getAssetThumbnailUrl(assetId);
+                        const res = await fetch(downloadUrl);
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        fileBlob = await res.blob();
                     } else {
-                        downloadUrl = `https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`; [cite: 26]
+                        // Other types route through the assetdelivery server (Proxy needed)
+                        downloadUrl = `https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`;
+                        fileBlob = await fetchBlob(downloadUrl);
                     }
 
-                    await triggerDownload(downloadUrl, filename); [cite: 27]
-                    await new Promise(r => setTimeout(r, 1000));
+                    // Add the file blob to the ZIP
+                    zip.file(filename, fileBlob);
+                    filesAddedToZip++;
+                    
+                    await new Promise(r => setTimeout(r, 500)); // Short delay to prevent API rate limits
                 } catch (err) {
-                    console.error(err); [cite: 28]
-                    showError(`Error on ID ${assetId}: ` + err.message);
+                    console.error(err);
+                    showError(`Skipped ID ${assetId}: ` + err.message);
                     await new Promise(r => setTimeout(r, 2000)); 
                     hideError();
                 }
             }
 
-            hideLoadMsg(); [cite: 28]
-            showLoadMsg("All downloads finished!");
+            // Generate and download the final ZIP file
+            if (filesAddedToZip > 0) {
+                changeLoadMsg("Zipping your files... Please wait.");
+                const zipBlob = await zip.generateAsync({ type: "blob" });
+                triggerZipDownload(zipBlob, "RobloxAssets.zip");
+                
+                hideLoadMsg();
+                showLoadMsg("All downloads zipped and finished!");
+            } else {
+                hideLoadMsg();
+                showError("No valid assets could be downloaded.");
+            }
+            
             setTimeout(hideLoadMsg, 3000);
         }
 
-        // ─── Download trigger ─────────────────────────────────────────────────────────
-        async function triggerDownload(src, filename) {
-            const blob   = await fetchBlob(src); [cite: 29]
-            const anchor = document.createElement("a"); [cite: 30]
-            anchor.href  = URL.createObjectURL(blob); [cite: 30]
-            anchor.setAttribute("download", filename); [cite: 30]
-            document.body.appendChild(anchor); [cite: 30]
-            anchor.click(); [cite: 30]
-            document.body.removeChild(anchor); [cite: 30]
-            URL.revokeObjectURL(anchor.href); [cite: 30]
+        // ─── Zip Download trigger ─────────────────────────────────────────────────────
+        function triggerZipDownload(blob, filename) {
+            const anchor = document.createElement("a");
+            anchor.href  = URL.createObjectURL(blob);
+            anchor.setAttribute("download", filename);
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            URL.revokeObjectURL(anchor.href);
         }
 
         // ─── Utilities & UI helpers ───────────────────────────────────────────────────
         function sanitizeFilename(name) {
-            return (name ?? "unnamed").replace(/[/\\:*?"<>|]/g, "_").trim() || "unnamed"; [cite: 31]
+            return (name ?? "unnamed").replace(/[/\\:*?"<>|]/g, "_").trim() || "unnamed";
         }
 
         function showError(message) {
-            const el = document.getElementById("errorMsg"); [cite: 31]
-            el.innerText = message; [cite: 31]
+            const el = document.getElementById("errorMsg");
+            el.innerText = message;
             el.style.display = "block"; 
         }
 
         function hideError() {
-            document.getElementById("errorMsg").style.display = "none"; [cite: 31]
+            document.getElementById("errorMsg").style.display = "none";
         }
 
         function showLoadMsg(message) {
-            const el = document.getElementById("loadMsg"); [cite: 31]
-            el.innerText = message; [cite: 31]
+            const el = document.getElementById("loadMsg");
+            el.innerText = message;
             el.style.display = "block";
-            document.getElementById("submitAsset").style.display = "none"; [cite: 31]
+            document.getElementById("submitAsset").style.display = "none";
         }
 
         function hideLoadMsg() {
-            document.getElementById("loadMsg").style.display = "none"; [cite: 31]
+            document.getElementById("loadMsg").style.display = "none";
             document.getElementById("submitAsset").style.display = "block";
         }
 
         function changeLoadMsg(message) {
-            document.getElementById("loadMsg").innerText = message; [cite: 31]
+            document.getElementById("loadMsg").innerText = message;
         }
 
         function markInvalid(id) {
-            document.getElementById(id).style.borderColor = "#f74b52"; [cite: 32]
+            document.getElementById(id).style.borderColor = "#f74b52";
         }
 
         function resetBorders() {
-            document.getElementById("assetURL").style.borderColor = "#ccc"; [cite: 32]
-            const typeEl = document.getElementById("assetType"); [cite: 32]
-            if (typeEl) typeEl.style.borderColor = "#ccc"; [cite: 33]
+            document.getElementById("assetURL").style.borderColor = "#ccc";
+            const typeEl = document.getElementById("assetType");
+            if (typeEl) typeEl.style.borderColor = "#ccc";
         }
     </script>
 </body>
