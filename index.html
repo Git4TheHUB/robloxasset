@@ -6,8 +6,6 @@
     <link rel="stylesheet" type="text/css" href="scripts/css/style.css">
     <link rel="stylesheet" type="text/css" href="scripts/css/fonts.css">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="scripts/js/jquery-3.2.1.min.js"></script>
-    <script src="scripts/js/main.js"></script>
     <meta name="description"
         content="Download Roblox shirts, models & other assets to use directly in your game, or for other use.">
     <meta name="robots" content="max-snippet:-1, max-image-preview:large, max-video-preview:-1">
@@ -28,6 +26,15 @@
         content="Download Roblox shirts, models & other assets to use directly in your game, or for other use.">
     <meta name="twitter:title" content="RobloxAsset - Roblox Asset Downloader">
     <meta name="twitter:image" content="https://robloxasset.tk/images/robloxasset.jpg">
+    
+    <style>
+        /* Quick override to make the input act like a text area for batch inputs */
+        #assetURL {
+            height: 80px;
+            resize: vertical;
+            font-family: inherit;
+        }
+    </style>
 </head>
 
 <body>
@@ -35,9 +42,10 @@
         <h1 class="mainHeader">Roblox<span>Asset</span></h1>
         <div id="formWrapper">
             <div id="form">
-                <input autocomplete="off" type="text" id="assetURL" name="url" placeholder="Enter Roblox Asset URL...">
+                <textarea autocomplete="off" id="assetURL" name="url" placeholder="Enter Roblox Asset URLs or IDs separated by commas..."></textarea>
+                
                 <select id="assetType" name="type">
-                    <option value="placeholder">Select Asset Type</option>
+                    <option value="placeholder">Select Asset Type (Optional)</option>
                     <option value="accessory">Accessory</option>
                     <option value="clothing">Clothing</option>
                     <option value="decal">Decal</option>
@@ -46,15 +54,188 @@
                     <option value="mesh">Mesh</option>
                     <option value="plugin">Plugin</option>
                 </select>
-                <p id="exampleText">Example URL: <span
-                        class="example">https://www.roblox.com/library/4951534350/Astronomia</span></p>
-                <input id="submitAsset" type="submit" value="Download Asset">
-                <h2 id="loadMsg">Downloading...</h2>
-                <p id="errorMsg">placeholder</p>
+                
+                <p id="exampleText">Example: <span
+                        class="example">4951534350, 6532975426</span></p>
+                        
+                <input id="submitAsset" type="submit" value="Download Asset(s)">
+                <h2 id="loadMsg" style="display: none;">Downloading...</h2>
+                <p id="errorMsg" style="display: none;">placeholder</p>
             </div>
         </div>
     </div>
     <p class="footer">Total Downloads: <span id="totalDownloads"></span> | Created by Nanoo</p>
+
+    <script>
+        const CORS_PROXY = "https://cors-anywhere.herokuapp.com/";
+
+        // Roblox AssetTypeId -> file extension [cite: 3]
+        const ASSET_TYPE_EXT = {
+            1:  ".png",   2:  ".rbxm",  3:  ".lua",   5:  ".rbxm",  8:  ".rbxm", 
+            9:  ".png",   11: ".png",   12: ".png",   13: ".png",   17: ".rbxm",
+            18: ".png",   19: ".rbxm",  21: ".png",   24: ".rbxm",  25: ".rbxm", 
+            26: ".rbxm",  27: ".rbxm",  28: ".rbxm",  29: ".rbxm",  30: ".rbxm", 
+            38: ".rbxm",  40: ".rbxm",  41: ".rbxm",  42: ".rbxm",  43: ".rbxm",  
+            44: ".rbxm",  45: ".rbxm",  46: ".rbxm",  47: ".rbxm",  50: ".mp3",   
+            51: ".rbxm",  61: ".ttf",   62: ".ttf",   63: ".mp4"
+        };
+
+        const IMAGE_TYPES = new Set([1, 9, 11, 12, 13, 18, 21]); [cite: 6]
+
+        document.addEventListener("DOMContentLoaded", () => {
+            document.getElementById("submitAsset").addEventListener("click", processOptions); [cite: 7]
+        });
+
+        // ─── ID extraction ────────────────────────────────────────────────────────────
+        function extractAssetId(url) {
+            const match = url.match(/\/(\d{6,})/); [cite: 8]
+            return match ? match[1] : null; [cite: 9]
+        }
+
+        // ─── Roblox JSON API calls ─────────────────────────────
+        async function fetchJSON(url) {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`); [cite: 10]
+            return res.json(); [cite: 11]
+        }
+
+        async function getAssetDetails(assetId) {
+            const data = await fetchJSON(`https://economy.roblox.com/v2/assets/${assetId}/details`);
+            return { name: data.Name, assetTypeId: data.AssetTypeId }; [cite: 12]
+        }
+
+        async function getAssetThumbnailUrl(assetId) {
+            const data = await fetchJSON(`https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=420x420&format=Png&isCircular=false`);
+            const entry = data?.data?.[0]; [cite: 13]
+            if (!entry || entry.state !== "Completed") {
+                throw new Error("Thumbnail not yet available — try again in a moment"); [cite: 13]
+            }
+            return entry.imageUrl; [cite: 14]
+        }
+
+        // ─── Binary download (CORS proxy required) ───────────────────────────────────
+        async function fetchBlob(url) {
+            const res = await fetch(CORS_PROXY + url);
+            if (!res.ok) throw new Error(`HTTP ${res.status} downloading asset`); [cite: 15]
+            return res.blob(); [cite: 16]
+        }
+
+        // ─── Batch Processing ────────────────────────
+        async function processOptions() {
+            const inputVal = document.getElementById("assetURL").value.trim(); [cite: 16]
+
+            hideError();
+            resetBorders(); [cite: 16]
+
+            if (!inputVal) {
+                markInvalid("assetURL"); [cite: 17]
+                return showError("Asset URL or ID was not specified"); [cite: 17]
+            }
+
+            // Parse comma-separated string
+            const rawInputs = inputVal.split(',').map(s => s.trim()).filter(Boolean);
+            const assetIds = [];
+
+            for (const raw of rawInputs) {
+                if (/^\d+$/.test(raw)) {
+                    assetIds.push(raw); 
+                } else {
+                    const extracted = extractAssetId(raw);
+                    if (extracted) assetIds.push(extracted); 
+                }
+            }
+
+            if (assetIds.length === 0) {
+                markInvalid("assetURL");
+                return showError("Could not find valid asset IDs in your input.");
+            }
+
+            for (let i = 0; i < assetIds.length; i++) {
+                const assetId = assetIds[i];
+                showLoadMsg(`Processing Asset ${i + 1} of ${assetIds.length} (ID: ${assetId})...`);
+
+                try {
+                    const { name, assetTypeId } = await getAssetDetails(assetId); [cite: 22]
+                    const ext = ASSET_TYPE_EXT[assetTypeId] ?? ".bin"; [cite: 23]
+                    const filename = sanitizeFilename(name) + ext; [cite: 23]
+
+                    changeLoadMsg(`Downloading ${filename}...`);
+
+                    let downloadUrl; [cite: 24]
+                    if (IMAGE_TYPES.has(assetTypeId)) { [cite: 25]
+                        downloadUrl = await getAssetThumbnailUrl(assetId); [cite: 25]
+                    } else {
+                        downloadUrl = `https://assetdelivery.roblox.com/v1/asset/?id=${assetId}`; [cite: 26]
+                    }
+
+                    await triggerDownload(downloadUrl, filename); [cite: 27]
+                    await new Promise(r => setTimeout(r, 1000));
+                } catch (err) {
+                    console.error(err); [cite: 28]
+                    showError(`Error on ID ${assetId}: ` + err.message);
+                    await new Promise(r => setTimeout(r, 2000)); 
+                    hideError();
+                }
+            }
+
+            hideLoadMsg(); [cite: 28]
+            showLoadMsg("All downloads finished!");
+            setTimeout(hideLoadMsg, 3000);
+        }
+
+        // ─── Download trigger ─────────────────────────────────────────────────────────
+        async function triggerDownload(src, filename) {
+            const blob   = await fetchBlob(src); [cite: 29]
+            const anchor = document.createElement("a"); [cite: 30]
+            anchor.href  = URL.createObjectURL(blob); [cite: 30]
+            anchor.setAttribute("download", filename); [cite: 30]
+            document.body.appendChild(anchor); [cite: 30]
+            anchor.click(); [cite: 30]
+            document.body.removeChild(anchor); [cite: 30]
+            URL.revokeObjectURL(anchor.href); [cite: 30]
+        }
+
+        // ─── Utilities & UI helpers ───────────────────────────────────────────────────
+        function sanitizeFilename(name) {
+            return (name ?? "unnamed").replace(/[/\\:*?"<>|]/g, "_").trim() || "unnamed"; [cite: 31]
+        }
+
+        function showError(message) {
+            const el = document.getElementById("errorMsg"); [cite: 31]
+            el.innerText = message; [cite: 31]
+            el.style.display = "block"; 
+        }
+
+        function hideError() {
+            document.getElementById("errorMsg").style.display = "none"; [cite: 31]
+        }
+
+        function showLoadMsg(message) {
+            const el = document.getElementById("loadMsg"); [cite: 31]
+            el.innerText = message; [cite: 31]
+            el.style.display = "block";
+            document.getElementById("submitAsset").style.display = "none"; [cite: 31]
+        }
+
+        function hideLoadMsg() {
+            document.getElementById("loadMsg").style.display = "none"; [cite: 31]
+            document.getElementById("submitAsset").style.display = "block";
+        }
+
+        function changeLoadMsg(message) {
+            document.getElementById("loadMsg").innerText = message; [cite: 31]
+        }
+
+        function markInvalid(id) {
+            document.getElementById(id).style.borderColor = "#f74b52"; [cite: 32]
+        }
+
+        function resetBorders() {
+            document.getElementById("assetURL").style.borderColor = "#ccc"; [cite: 32]
+            const typeEl = document.getElementById("assetType"); [cite: 32]
+            if (typeEl) typeEl.style.borderColor = "#ccc"; [cite: 33]
+        }
+    </script>
 </body>
 
 </html>
